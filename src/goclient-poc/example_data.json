@@ -1,0 +1,10 @@
+{
+  "client_id": "client_abc123",
+  "timestamp": 1772651420,
+  "data": {
+    "temperature": 22.5,
+    "status": "active",
+    "data": {}
+  },
+  "signature": "3045022100e123... (hex or base64 encoded signature)"
+}
