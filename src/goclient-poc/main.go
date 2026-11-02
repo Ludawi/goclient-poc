@@ -1,16 +1,42 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/ssh"
+	"net/http"
 	"os"
-	// "path"
-	// "path/filepath"
+	"time"
 )
+
+type Request struct {
+	ClientId  string  `json:"client_id"`
+	Timestamp int64   `json:"timestamp"`
+	Data      Payload `json:"data"`
+	Signature string  `json:"signature"`
+}
+
+type Payload struct {
+	Status  string         `json:"status"`
+	Metrics map[string]any `json:"metrics"`
+}
+
+type WhoAmIRequest struct {
+	PublicKey string `json:"public_key"`
+	Timestamp int64  `json:"timestamp"`
+	Signature string `json:"signature"`
+}
+
+type EnrollmentRequest struct {
+	PublicKey   string `json:"public_key"`
+	Timestamp   int64  `json:"timestamp"`
+	Signature   string `json:"signature"`
+	Hostname    string `json:"hostname"`
+	AdminSecret string `json:"admin_secret"`
+}
 
 type Secrets struct {
 	Pubkey  string `json:"pubkey"`
@@ -18,57 +44,80 @@ type Secrets struct {
 }
 
 func main() {
-	// privKey, pubKey, err := ed25519.GenerateKey(nil)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fmt.Printf("privkey: %x\n", privKey)
-	// fmt.Printf("pubkey: %x\n", pubKey)
 
 	startup()
 }
 
 func startup() {
 	// 1. Validate or Creata ed25519 key pair.
-	keyPairValidation()
-
+	pubKey, privKey, err := LoadKeyPairs("./secrets.json")
+	if err != nil {
+		fmt.Printf("Failed to initialize keys: %v\n", err)
+		return
+	}
+	fmt.Printf("pubkey: %x\nprivkey: %x\n", pubKey, privKey)
 	// 2. Connect or Enroll with controller
 	// 		Send a signed message to /whoami route
+	timestamp := time.Now().Unix()
+
+	signedMessage := fmt.Sprintf("%d:%s", timestamp, base64.StdEncoding.EncodeToString(pubKey))
+	signature := ed25519.Sign(privKey, []byte(signedMessage))
+
+	payload := WhoAmIRequest{
+		PublicKey: base64.StdEncoding.EncodeToString(pubKey),
+		Timestamp: timestamp,
+		Signature: base64.StdEncoding.EncodeToString(signature),
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Printf("Error marshalling request %v\n", err)
+		return
+	}
+
+	resp, err := http.Post("http://localhost:8088/whoami", "application/json,", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		fmt.Printf("Failed to connect to controller %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		fmt.Printf("2xx response")
+	} else {
+		fmt.Printf("non-2xx response")
+	}
+
 }
 
-func keyPairValidation() {
-	secretsFile := "./secrets.json"
-	if _, err := os.Stat(secretsFile); err == nil {
-		fileData, err := os.ReadFile(secretsFile)
+func LoadKeyPairs(keyfile string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	if _, err := os.Stat(keyfile); err == nil {
+		// File exists, read and decode
+		fileData, err := os.ReadFile(keyfile)
 		if err != nil {
-			fmt.Printf("Error reading keyfile: %v\n", err)
-			return
+			return nil, nil, fmt.Errorf("error reading keyfile: %w", err)
 		}
 
 		var keys Secrets
-		err = json.Unmarshal(fileData, &keys)
-		if err != nil {
-			fmt.Printf("Error reading keys from JSON keyfile data %v\n", err)
-			return
+		if err := json.Unmarshal(fileData, &keys); err != nil {
+			return nil, nil, fmt.Errorf("error unmarshaling JSON keyfile: %w", err)
 		}
 
-		// Decode from base64 > ed25519
-		pubKey, errpub := base64.StdEncoding.DecodeString(keys.Pubkey)
-		privKey, errpriv := base64.StdEncoding.DecodeString(keys.Privkey)
-		if errpub != nil || errpriv != nil {
-			fmt.Println("Error decoden Base64 endoded keys from file")
-			return
+		pubKey, errPub := base64.StdEncoding.DecodeString(keys.Pubkey)
+		privKey, errPriv := base64.StdEncoding.DecodeString(keys.Privkey)
+		if errPub != nil || errPriv != nil {
+			return nil, nil, errors.New("error decoding base64 encoded keys from file")
 		}
 
-		fmt.Printf("Successfully read keyfile: \n")
-		fmt.Printf("pubkey: %x\nprivkey: %x\n", pubKey, privKey)
+		return ed25519.PublicKey(pubKey), ed25519.PrivateKey(privKey), nil
 
 	} else if errors.Is(err, os.ErrNotExist) {
-		privKey, pubKey, err := ed25519.GenerateKey(nil)
+		// File does not exist, generate new key pair
+		pubKey, privKey, err := ed25519.GenerateKey(nil)
 		if err != nil {
-			panic(err)
+			return nil, nil, fmt.Errorf("error generating ed25519 key: %w", err)
 		}
-		// Encode to bas64
+
 		s := Secrets{
 			Pubkey:  base64.StdEncoding.EncodeToString(pubKey),
 			Privkey: base64.StdEncoding.EncodeToString(privKey),
@@ -76,18 +125,15 @@ func keyPairValidation() {
 
 		jsonData, err := json.MarshalIndent(s, "", " ")
 		if err != nil {
-			fmt.Printf("Error converting generated keypair to JSON: %v\n", err)
-			return
+			return nil, nil, fmt.Errorf("error marshaling new keypair: %w", err)
 		}
 
-		err = os.WriteFile("./secrets.json", jsonData, 0644)
-		if err != nil {
-			fmt.Printf("Error creating keypair: %v\n", err)
+		if err := os.WriteFile(keyfile, jsonData, 0600); err != nil { // 0600 permissions for private keys!
+			return nil, nil, fmt.Errorf("error saving keypair to file: %w", err)
 		}
 
+		return pubKey, privKey, nil
 	} else {
-		fmt.Errorf("Problem during daemon startup, could not verify key pair.")
-		panic(err)
+		return nil, nil, fmt.Errorf("unexpected error checking keyfile: %w", err)
 	}
-
 }
