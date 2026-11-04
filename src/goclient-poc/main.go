@@ -55,16 +55,32 @@ func startup() {
 		fmt.Printf("Failed to initialize keys: %v\n", err)
 		return
 	}
-	fmt.Printf("pubkey: %x\nprivkey: %x\n", pubKey, privKey)
+	// 1.1 Pull controllers public key
+	controllerKey, err := GetControllerKey()
+	if err != nil {
+		fmt.Printf("Failed to pull Controllers public key %v\n", err)
+		return
+	}
+	fmt.Printf("Client Key: %x\n", pubKey)
+	fmt.Printf("Controller Key: %s\n", controllerKey)
+
 	// 2. Connect or Enroll with controller
+	Whoami(pubKey, privKey)
+
+}
+
+func Whoami(pubkey []byte, privkey []byte) {
+	// a universal way to know the identity of a client
 	// 		Send a signed message to /whoami route
 	timestamp := time.Now().Unix()
 
-	signedMessage := fmt.Sprintf("%d:%s", timestamp, base64.StdEncoding.EncodeToString(pubKey))
-	signature := ed25519.Sign(privKey, []byte(signedMessage))
+	signedMessage := fmt.Sprintf("%d:%s", timestamp, base64.StdEncoding.EncodeToString(pubkey))
+	signature := ed25519.Sign(privkey, []byte(signedMessage))
+
+	fmt.Println(base64.StdEncoding.EncodeToString(pubkey))
 
 	payload := WhoAmIRequest{
-		PublicKey: base64.StdEncoding.EncodeToString(pubKey),
+		PublicKey: base64.StdEncoding.EncodeToString(pubkey),
 		Timestamp: timestamp,
 		Signature: base64.StdEncoding.EncodeToString(signature),
 	}
@@ -75,7 +91,7 @@ func startup() {
 		return
 	}
 
-	resp, err := http.Post("http://localhost:8088/whoami", "application/json,", bytes.NewBuffer(jsonBody))
+	resp, err := http.Post("http://127.0.0.1:8080/api/whoami", "application/json", bytes.NewBuffer(jsonBody)) //  PLACEHOLDER global var
 	if err != nil {
 		fmt.Printf("Failed to connect to controller %v\n", err)
 		return
@@ -88,6 +104,30 @@ func startup() {
 		fmt.Printf("non-2xx response")
 	}
 
+}
+
+func GetControllerKey() (string, error) {
+	resp, err := http.Get("http://127.0.0.1:8080/api/signature")
+	if err != nil {
+		fmt.Printf("Failed to connect to controller %v\n", err)
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		ControllerKey string `json:"public_key"`
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			fmt.Printf("Error decoding JSON response %v\n", err)
+			return "", err
+		}
+	} else {
+		fmt.Printf("Controller returned unexpected response %v\n", resp.StatusCode)
+		return "", err
+	}
+
+	return result.ControllerKey, err
 }
 
 func LoadKeyPairs(keyfile string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
@@ -113,6 +153,7 @@ func LoadKeyPairs(keyfile string) (ed25519.PublicKey, ed25519.PrivateKey, error)
 
 	} else if errors.Is(err, os.ErrNotExist) {
 		// File does not exist, generate new key pair
+		fmt.Println("Did not find a keyfile at the specified location, creating a new client...")
 		pubKey, privKey, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error generating ed25519 key: %w", err)
