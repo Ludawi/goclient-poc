@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"golang.org/x/crypto/nacl/sign"
 )
 
 type Request struct {
@@ -55,7 +57,7 @@ func startup() {
 		fmt.Printf("Failed to initialize keys: %v\n", err)
 		return
 	}
-	// 1.1 Pull controllers public key
+	// 1.1. Pull controllers public key
 	controllerKey, err := GetControllerKey()
 	if err != nil {
 		fmt.Printf("Failed to pull Controllers public key %v\n", err)
@@ -70,7 +72,7 @@ func startup() {
 }
 
 func Whoami(pubkey []byte, privkey []byte) {
-	// a universal way to know the identity of a client
+	//  a universal way to know the identity of a client
 	// 		Send a signed message to /whoami route
 	timestamp := time.Now().Unix()
 
@@ -128,6 +130,31 @@ func GetControllerKey() (string, error) {
 	}
 
 	return result.ControllerKey, err
+}
+
+func ValidateControllerMessage(controllerSignature string, controllerKey string, message []byte) error {
+	publicKey, err := base64.StdEncoding.DecodeString(controllerKey)
+	if err != nil {
+		fmt.Printf("Error decoding controllers public key. %v\n", err)
+		return err
+	}
+
+	signature, err := base64.StdEncoding.DecodeString(controllerSignature)
+	if err != nil {
+		fmt.Printf("Error decoding controllers public key. %v\n", err)
+		return err
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return errors.New("Invalid length of controllers public key.")
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return errors.New("Invalid length of controllers signature.")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), message, signature) {
+		return errors.New("Verification of signature failed.")
+	}
+
+	return nil
 }
 
 func LoadKeyPairs(keyfile string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
