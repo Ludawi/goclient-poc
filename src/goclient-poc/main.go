@@ -10,8 +10,7 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"golang.org/x/crypto/nacl/sign"
+	// "golang.org/x/crypto/nacl/sign"
 )
 
 type Request struct {
