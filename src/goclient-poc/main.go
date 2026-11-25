@@ -66,19 +66,39 @@ func startup() {
 	fmt.Printf("Controller Key: %s\n", controllerKey)
 
 	// 2. Connect or Enroll with controller
-	Whoami(pubKey, privKey)
+	info, err := Whoami(pubKey, privKey)
+	if err != nil {
+		fmt.Println("Error requesting running whoami", err)
+		return
+	}
+	fmt.Printf("Client Status: %v\n", info.Status)
 
 }
 
-func Whoami(pubkey []byte, privkey []byte) {
+type AgentStatus string
+
+const (
+	StatusUnknown     AgentStatus = "unknown"
+	statusActive      AgentStatus = "active"
+	statusInactive    AgentStatus = "inactive"
+	statusWaiting     AgentStatus = "waiting"
+	statusDeactivated AgentStatus = "deactivated"
+)
+
+type WhoAmIResponse struct {
+	Hostname string   `json:"hostname,omitempty"`
+	Status   string   `json:"status"`
+	PubKey   string   `json:"pubkey,omitempty"`
+	Profiles []string `json:"profiles,omitempty"`
+}
+
+func Whoami(pubkey []byte, privkey []byte) (*WhoAmIResponse, error) {
 	//  a universal way to know the identity of a client
 	// 		Send a signed message to /whoami route
 	timestamp := time.Now().Unix()
 
 	signedMessage := fmt.Sprintf("%d:%s", timestamp, base64.StdEncoding.EncodeToString(pubkey))
 	signature := ed25519.Sign(privkey, []byte(signedMessage))
-
-	fmt.Println(base64.StdEncoding.EncodeToString(pubkey))
 
 	payload := WhoAmIRequest{
 		PublicKey: base64.StdEncoding.EncodeToString(pubkey),
@@ -88,23 +108,25 @@ func Whoami(pubkey []byte, privkey []byte) {
 
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("Error marshalling request %v\n", err)
-		return
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	resp, err := http.Post("http://127.0.0.1:8080/api/whoami", "application/json", bytes.NewBuffer(jsonBody)) //  PLACEHOLDER global var
+	resp, err := http.Post("http://127.0.0.1:8080/api/whoami", "application/json", bytes.NewBuffer(jsonBody)) // PLACEHOLDER for global var
 	if err != nil {
-		fmt.Printf("Failed to connect to controller %v\n", err)
-		return
+		return nil, fmt.Errorf("connect to controller: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("2xx response")
-	} else {
-		fmt.Printf("non-2xx response")
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("whoami failed: HTTP %d", resp.StatusCode)
 	}
 
+	var clientStatus WhoAmIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&clientStatus); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	return &clientStatus, nil
 }
 
 func GetControllerKey() (string, error) {
