@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -32,11 +33,15 @@ type WhoAmIRequest struct {
 }
 
 type EnrollmentRequest struct {
-	PublicKey   string `json:"public_key"`
-	Timestamp   int64  `json:"timestamp"`
-	Signature   string `json:"signature"`
+	PublicKey string `json:"public_key"`
+	Message   string `json:"message"`
+	Signature string `json:"signature"`
+}
+
+type EnrollMessage struct {
 	Hostname    string `json:"hostname"`
 	AdminSecret string `json:"admin_secret"`
+	Timestamp   int64  `json:"timestamp"`
 }
 
 type Secrets struct {
@@ -127,6 +132,59 @@ func Whoami(pubkey []byte, privkey []byte) (*WhoAmIResponse, error) {
 	}
 
 	return &clientStatus, nil
+}
+
+type EnrollmentResponse struct {
+	Hostname string      `json:"hostname,omitempty"`
+	Status   AgentStatus `json:"status"`
+	PubKey   string      `json:"pubkey,omitempty"`
+	Profiles []string    `json:"profiles,omitempty"`
+}
+
+func Enroll(pubkey []byte, privkey []byte, hostname, secret string) (*EnrollmentResponse, int, error) {
+	//  enroll an agent with the controller
+	//  return of status and profiles determines run mode (waiting, idle, active, pullProfiles)
+	msgBytes, err := json.Marshal(EnrollMessage{
+		Hostname:    hostname,
+		AdminSecret: secret,
+		Timestamp:   time.Now().Unix(),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal message: %w", err)
+	}
+
+	signature := ed25519.Sign(privkey, msgBytes)
+
+	payload, err := json.Marshal(EnrollmentRequest{
+		PublicKey: base64.StdEncoding.EncodeToString(pubkey),
+		Message:   base64.StdEncoding.EncodeToString(msgBytes),
+		Signature: base64.StdEncoding.EncodeToString(signature),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	resp, err := http.Post("http://127.0.0.1:8080/api/enroll", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, fmt.Errorf("connect to controller: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusCreated, http.StatusOK:
+		var dev EnrollmentResponse
+		if err := json.NewDecoder(resp.Body).Decode(&dev); err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("decoder response: %w", err)
+		}
+		return &dev, resp.StatusCode, nil
+
+	case http.StatusNotModified:
+		return nil, resp.StatusCode, nil
+
+	default:
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, resp.StatusCode, fmt.Errorf("Failed to enroll with controller: HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+	}
 }
 
 func GetControllerKey() (string, error) {
